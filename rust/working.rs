@@ -1,6 +1,7 @@
 
 type BufInd = usize;
-type InstrInd = u32;
+type InstrRel = u16;
+type InstrInd = usize;
 type StrInd = u32;
 type CodeInd = u32;
 
@@ -11,15 +12,15 @@ enum Instr {
     Proceed,
     
     Mode(Mode),
-    PrepScan(InstrInd),
+    PrepScan(InstrRel),
     DropScan,
-    Goto(CodeInd),
+    Skip(InstrRel),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode{ Read, Write }
 
-struct ScanFrame(InstrInd, BufInd, Mode, BufInd);
+struct ScanFrame(InstrRel, BufInd, Mode, BufInd, InstrInd);
 
 struct Machine<'base> {
     scans: Vec<ScanFrame>,
@@ -42,10 +43,11 @@ impl<'b> Machine<'b> {
         self.scans.last().map(|x|x.2)
             .unwrap_or(Mode::Write)
     }
-    fn new_scan(&mut self, fail: InstrInd) {
+    fn new_scan(&mut self, fail: InstrRel) {
         self.scans.push(
             ScanFrame(fail, self.buf.len(),
-            Mode::Write, self.buf.len()));
+            Mode::Write, self.buf.len(),
+            self.frames.last().unwrap().0));
     }
     fn pop_scan(&mut self) {
         let x = if let Some(x) = self.scans.pop() {x} else {return};
@@ -56,7 +58,7 @@ impl<'b> Machine<'b> {
         let frame = self.scans.pop().unwrap();
         let last = self.frames.last_mut().unwrap();
         self.buf.truncate(frame.3);
-        last.0 = frame.0 as usize;
+        last.0 = frame.4 as usize + frame.0 as usize;
     }
     fn new_frame(&mut self, code: &'b [Instr]) {
         self.frames.push((0, code));
@@ -68,7 +70,7 @@ impl<'b> Machine<'b> {
         self.scans.last().map(|x|x.1).unwrap_or(self.buf.len())
     }
     fn cs(&mut self, amt: usize) {
-        let ScanFrame(_, ref mut s, _, _)
+        let ScanFrame(_, ref mut s, _, _, _)
             = self.scans.last_mut().unwrap();
         *s += amt;
     }
@@ -112,9 +114,9 @@ impl<'b> Machine<'b> {
             Instr::Mode(mode) => {
                 self.scans.last_mut().unwrap().2 = mode;
             },
-            Instr::Goto(x) => {
+            Instr::Skip(x) => {
                 let last = self.frames.last_mut().unwrap();
-                last.0 = x as usize;
+                last.0 += x as usize;
             }
             _=>()
         }
@@ -127,9 +129,9 @@ impl<'b> Machine<'b> {
 }
 
 fn main() {
-    /* <!-- attrib _0 : [_1=testo] abba [/_1=][#_1#]
+    /* <!-- attrib _0 : [_1=testo] abba [/_1=][#_1#][#_2#]-->
      * <!-- attrib _1 : [_2!=]testo[/_2!=] -->
-     * <!-- attrib _2 :  -->
+     * <!-- attrib _2 : testo -->
      */
     //
     let strs = [
@@ -138,21 +140,21 @@ fn main() {
         "testo",
     ];
     let attrs = [vec![
-        Instr::PrepScan(6),
+        Instr::PrepScan(5),
         Instr::Invoke(1),
         Instr::Mode(Mode::Read),
         Instr::PutStr(0),
         Instr::DropScan,
         Instr::PutStr(1),
-        
         Instr::Invoke(1),
+        Instr::Invoke(2),
         Instr::Proceed
     ], vec![
-        Instr::PrepScan(5),
+        Instr::PrepScan(4),
         Instr::Invoke(2),
         Instr::Mode(Mode::Read),
         Instr::DropScan,
-        Instr::Goto(6),
+        Instr::Skip(1),
         Instr::PutStr(2),
         Instr::Proceed,
     ], vec![
