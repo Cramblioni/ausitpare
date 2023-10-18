@@ -81,3 +81,6 @@ unification to compare the strings.
 - nesting
     - pseudo-namespacing
         so `[## magic ##]` would allow `[#magic:path#]` to be used.
+# Images
+ausitpare rendering a simple input file
+![ausitpare rendering](./ausitpare.png)

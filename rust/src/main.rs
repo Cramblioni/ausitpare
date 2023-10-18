@@ -1,5 +1,4 @@
-use std::mem;
-use std::slice;
+use std::{io, fs, env};
 use std::str::CharIndices;
 use std::iter::Peekable;
 use std::collections::HashMap;
@@ -495,12 +494,25 @@ impl<'b> Machine<'b> {
 }
 
 
-fn main() {
-    let test = r#"<!-- attrib magic : cool -->
+fn main() -> io::Result<()> {
+    let mut args = env::args();
+    args.next();
+    let test;
+    if let Some(source) = args.next() {
+        let mut file = fs::File::open(source)?;
+        let meta = file.metadata()?;
+        let mut temp = String::with_capacity(meta.len() as usize);
+        io::Read::read_to_string(&mut file, &mut temp)?;
+        test = temp;
+    } else {
+        eprintln!("!No Source Provided!");
+        return Ok(());
+    }
+    /* let test = r#"<!-- attrib magic : cool -->
 <!-- attrib testo : test  -->
 [#testo#][testo=[#testo#]]magic=[#magic#][/testo=]"#;
-
-    let mut parser = Parser::new(test);
+    */
+    let mut parser = Parser::new(&test[..]);
     eprintln!("[PARSING] {test:?}");
     let mut code = Vec::new();
     while parser.peek().is_some() {
@@ -539,9 +551,8 @@ fn main() {
     let code_map = code.iter().map(|x| &x[..]).collect::<Vec<_>>();
     let mut machine = Machine::new(&code_map[..], &strs[..]);
     machine.run();
-    println!("{}", machine.buf);
-
-
+    print!("{}", machine.buf);
+    Ok(())
 }
 
 // TODO
