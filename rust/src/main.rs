@@ -294,12 +294,14 @@ impl<'s, 'c: 's> Machine<'s, 'c> {
     }
 }
 
+type StrInd = u32;
+type InstrInd = u16;
+type OperInd = u16;
+
 fn main() {
-    let test = r#"
-<!-- attrib magic : cool -->
-<!-- attrib testo : test -->
-[#testo#][testo=]magic[/testo=]
-    "#;
+    let test = r#"<!-- attrib magic : cool -->
+<!-- attrib testo : test  -->
+[#testo#][testo=]magic=[#magic#][/testo=]"#;
 
     let mut parser = Parser::new(test);
     println!("[PARSING] {test:?}");
@@ -319,5 +321,4 @@ fn main() {
 }
 
 // TODO
-//  -   Conditionals
 //  -   most of everything else
