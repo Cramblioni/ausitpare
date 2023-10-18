@@ -54,9 +54,9 @@ invokes it, conditionals do execute their parameters. Conditionals use simple
 unification to compare the strings. 
 # Todo Lists
 ## required
-- [ ] Add new compiler and evaluation system
-    - [ ] Add new evaluator
-    - [ ] Add new compiler
+- [X] Add new compiler and evaluation system
+    - [X] Add new evaluator
+    - [X] Add new compiler
 - [ ] Special Attributes
     - [ ] root (i need to look into how Apricot does it)
     - [ ] modified (copy Apricot formatting)

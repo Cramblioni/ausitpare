@@ -12,7 +12,7 @@ enum Elem<'base> {
     Text(&'base str),
     Attr(&'base str),
     AttrDef(&'base str, Vec<Elem<'base>>),
-    Cond(&'base str, &'base str, Vec<Elem<'base>>, bool),
+    Cond(&'base str, Vec<Elem<'base>>, Vec<Elem<'base>>, bool),
 }
 
 #[derive(Clone, Debug)]
@@ -163,7 +163,13 @@ impl<'a> Parser<'a> {
         //eprintln!("[cond] expecting terminator {termin:?}");
         
         //eprintln!("[cond] parsing expected");
-        let expected = parser.scan_delim("]")?;
+        // let expected = parser.scan_delim("]")?;
+        let mut expected = Vec::new();
+        parser.push_nesting("]");
+        while !parser.test_str("]") {
+            expected.push(parser.parse_element()?);
+        }
+        parser.pop_nesting();
         //eprintln!("[cond] got {expected:?}");
         parser.pull()?;
 
@@ -202,109 +208,300 @@ impl<'a> Parser<'a> {
     }
 }
 
-struct Machine<'source, 'code: 'source> {
-    vars: HashMap<String, &'code[Elem<'source>]>,
-    // vars: Vec<HashMap<String, &'code[Elem<'source>]>>,
-    code: Vec<(slice::Iter<'code, Elem<'source>>, bool)>,
-    outp: String,
+// === COMPILER EVALUATOR
+#[allow(unused, dead_code)]
+mod fuckyou {
+    fn detach<'a, 'b: 'a, T>(x: &'a T) -> &'b T {
+        unsafe { std::ptr::read(std::ptr::addr_of!(x).cast()) }
+    }
+    fn detach_mut<'a, 'b: 'a, T>(x: &'a mut T) -> &'b mut T {
+        unsafe { std::ptr::read(std::ptr::addr_of!(x).cast()) }
+    }
 }
-impl<'s, 'c: 's> Machine<'s, 'c> {
-    fn new(code: &'c[Elem<'s>]) -> Self {
-        Machine{
-            // vars: vec![HashMap::new()],
-            vars: HashMap::new(),
-            code: vec![(code.iter(), false)],
-            outp: String::new(),
+type BufInd = usize;
+type InstrRel = u16;
+type StrInd = u32;
+type CodeInd = u32;
+type InstrInd = usize;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode{ Read, Write }
+
+#[derive(Debug, Clone, Copy)]
+enum Instr {
+    PutStr(StrInd),
+    Invoke(CodeInd),
+    Proceed,
+    
+    Mode(Mode),
+    PrepScan(InstrRel),
+    DropScan,
+    Skip(InstrRel),
+    
+    Trap, // A runtime error for a compile time temporary
+}
+type Code = Vec<Instr>;
+struct Compiler<'base> {
+    strs: Vec<&'base str>,
+    str_ind: HashMap<&'base str, StrInd>,
+    attrs: Vec<Option<Code>>,
+    attr_ind: HashMap<&'base str, CodeInd>,
+    queue: Vec<(&'base str, Vec<Elem<'base>>)>,
+}
+impl<'b> Compiler<'b> {
+    fn new() -> Self {
+        Compiler {
+            strs: Vec::new(),
+            str_ind: HashMap::new(),
+            attrs: Vec::new(),
+            attr_ind: HashMap::new(),
+            queue: Vec::new(),
         }
     }
-    fn new_frame(&mut self, code: &'c[Elem<'s>]) {
-        // self.vars.push(HashMap::new());
-        self.code.push((code.iter(), false));
+    fn to_exec(self) -> (Vec<Code>, Vec<&'b str>, HashMap<&'b str, CodeInd>) {
+        (self.attrs.into_iter()
+          .map(Option::unwrap).collect(),
+        self.strs, self.attr_ind)
     }
-    fn drop_frame(&mut self) {
-        // self.vars.pop();
-        self.code.pop();
+    // returns `None` if the attribute already exists and is bound
+    fn new_attr(&mut self, name: &'b str) -> Option<CodeInd> {
+        if self.attr_ind.contains_key(name) {
+            let ind = self.attr_ind[name];
+            if self.attrs[ind as usize].is_some() {
+                return None;
+            }
+            return Some(ind);
+        }
+        let ret = self.attrs.len() as CodeInd;
+        self.attr_ind.insert(name, ret);
+        self.attrs.push(None);
+        Some(ret)
     }
-    fn get_instr(&mut self) -> Option<&'c Elem<'s>> {
-        let (end, signif) = self.code.last_mut()?;
-        let signif = *signif;
-        match end.next() {
-            None => {self.drop_frame(); if signif {None} else {self.get_instr()}},
-            Some(instr) => Some(instr),
+    fn bind_attr(&mut self, name: &'b str) -> CodeInd {
+        self.attr_ind.entry(name)
+         .or_insert_with(|| {
+            let ret = self.attrs.len() as CodeInd;
+            self.attrs.push(None);
+            ret
+         }).clone()
+    }
+    fn bind_str(&mut self, string: &'b str ) -> StrInd {
+        self.str_ind.entry(string)
+         .or_insert_with(|| {
+            let ret = self.strs.len() as StrInd;
+            self.strs.push(string);
+            ret
+         }).clone()
+    }
+    fn enqueue(&mut self, name: &'b str, body: Vec<Elem<'b>>) {
+        self.queue.push((name, body));
+    }
+    fn new_unit<'d>(&'d mut self, binding: CodeInd) -> CompileUnit<'b, 'd> {
+        CompileUnit{
+            compiler: self, // detach_mut(self),
+            code: Vec::new(),
+            binding
         }
     }
-    fn invoke(&mut self, handle: &'s str) {
-        /*
-        for i in self.vars.iter().rev() {
-            if !i.contains_key(handle) {continue}
-            self.new_frame(i.get(handle).unwrap());
-            return;
-        }
-        */
-        if let Some(frame) = self.vars.get(handle)
-        {self.new_frame(frame);}
-        else { self.new_frame(&[]); }
+    fn prep(&mut self, init: Vec<Elem<'b>>) {
+        self.attrs.push(None);
+        let mut fst = self.new_unit(0);
+        fst.push_many(init);
+        fst.commit();
     }
-    fn make_signif(&mut self) {
-        if let Some((_, sig)) = self.code.last_mut() {
-            *sig = true;
+    fn run(&mut self) -> Result<(), &'b str> {
+        while let Some((name, body)) = self.queue.pop() {
+            let ind = if let Some(x) = self.new_attr(name) {x}
+                else {return Err(name)};
+            let mut fst = self.new_unit(ind);
+            fst.push_many(body);
+            fst.commit();
         }
+        Ok(())
     }
-    fn step(&mut self) -> bool {
-        eprintln!("[eval] getting next instr");
-        let oper = match self.get_instr() {
-            None => {return false;},
-            Some(x) => x
-        };
-        eprintln!("\tgot {oper:?}");
-        match oper {
-            Elem::Text(val) => {
-                eprintln!("[eval] writing text");
-                self.outp.push_str(val);
-            },
+    fn done(&self) -> bool {self.queue.len() == 0}
+}
+
+struct CompileUnit<'base: 'dur, 'dur> {
+    compiler: &'dur mut Compiler<'base>,
+    code: Code,
+    binding: CodeInd
+}
+
+impl<'b: 'd, 'd> CompileUnit<'b, 'd> {
+    fn commit(mut self) {
+        self.code.push(Instr::Proceed);
+        let _ = self.compiler.attrs
+         .get_mut(self.binding as usize)
+         .unwrap()
+         .insert(self.code);
+    }
+    fn push(&mut self, elem: Elem<'b>) {
+        match elem {
+            Elem::Text(string) => {
+                //eprintln!("compiling text");
+                let ind = self.compiler.bind_str(string);
+                self.code.push(Instr::PutStr(ind));
+            }
             Elem::Attr(name) => {
-                eprintln!("[eval] invoking {name:?}");
-                self.invoke(name);
-            },
-            Elem::AttrDef(handle, ref value) =>{
-                eprintln!("[eval] defining attr {handle:?}");
-                self.vars.entry(handle.to_string())
-                    .and_modify(|x| *x=value).or_insert(value);
-            } 
-            Elem::Cond(invoke,result, body, negate) => {
-                eprintln!("[eval] cond on {invoke:?}");
-                let mut local = String::new();
-                mem::swap(&mut local, &mut self.outp);
-                self.invoke(invoke);
-                self.make_signif();
-                self.run();
-                mem::swap(&mut local, &mut self.outp);
-                let mut res = local.as_str() == *result;
-                if *negate { res = !res; } 
-                if res {
-                    self.new_frame(body);
+                //eprintln!("compiling attr");
+                let ind = self.compiler.bind_attr(name);
+                self.code.push(Instr::Invoke(ind));
+            }
+            Elem::AttrDef(name, body) => {
+                //eprintln!("compiling attr def");
+                self.compiler.enqueue(name, body);
+            }
+            Elem::Cond(targ, cond, cond_body, negate) => {
+                //eprintln!("compiling cond");
+                let head = self.code.len();
+                self.code.push(Instr::Trap);
+                self.push(Elem::Attr(targ));
+                self.code.push(Instr::Mode(Mode::Read));
+                self.push_many(cond);
+                self.code.push(Instr::DropScan);
+                    let body = self.code.len();
+                    let jmp = (body - head) as InstrRel;
+                    self.code[head] = Instr::PrepScan(jmp);
+                if negate {
+                    self.code.push(Instr::Trap);
+                    let skip = self.code.len();
+                    self.push_many(cond_body);
+                    let body_end = self.code.len();
+                    let dist = (body_end-skip) as InstrRel;
+                    self.code[skip - 1] = Instr::Skip(dist);
+                } else {
+                    self.push_many(cond_body);
                 }
             }
-            _ => {}
         }
-        true
     }
-    fn run(&mut self) {
-        while self.step() {}
+    fn push_many(&mut self, elems: Vec<Elem<'b>>) {
+        for i in elems.into_iter() { self.push(i) }
     }
 }
 
-type StrInd = u32;
-type InstrInd = u16;
-type OperInd = u16;
+struct ScanFrame(InstrRel, BufInd, Mode, BufInd, InstrInd);
+
+struct Machine<'base> {
+    scans: Vec<ScanFrame>,
+    buf: String,
+    strs: &'base[&'base str],
+    code: &'base [&'base [Instr]],
+    frames: Vec<(usize, &'base [Instr])>,
+}
+impl<'b> Machine<'b> {
+    fn new(code: &'b [&'b [Instr]], strs: &'b [&'b str]) -> Self {
+        Machine{
+            scans: Vec::new(),
+            buf: String::new(),
+            strs,
+            code,
+            frames: vec![(0, code[0])]
+        }
+    }
+    fn get_mode(&self) -> Mode {
+        self.scans.last().map(|x|x.2)
+            .unwrap_or(Mode::Write)
+    }
+    fn new_scan(&mut self, fail: InstrRel) {
+        self.scans.push(
+            ScanFrame(fail, self.buf.len(),
+            Mode::Write, self.buf.len(),
+            self.frames.last().unwrap().0));
+    }
+    fn pop_scan(&mut self) {
+        let x = if let Some(x) = self.scans.pop() {x} else {return};
+        self.buf.truncate(x.3)
+    }
+    fn fail(&mut self) {
+        // Like pop_scan, but we jump aswell
+        
+        let frame = self.scans.pop().unwrap();
+        let last = self.frames.last_mut().unwrap();
+        self.buf.truncate(frame.3);
+        last.0 = frame.4 as usize + frame.0 as usize;
+        // eprintln!("scan failed, jumping to {}({}+{})", last.0, frame.4, frame.0);
+    }
+    fn new_frame(&mut self, code: &'b [Instr]) {
+        self.frames.push((0, code));
+    }
+    fn pop_frame(&mut self) {
+        self.frames.pop();
+    }
+    fn s(&self) -> usize {
+        self.scans.last().map(|x|x.1).unwrap_or(self.buf.len())
+    }
+    fn cs(&mut self, amt: usize) {
+        let ScanFrame(_, ref mut s, _, _, _)
+            = self.scans.last_mut().unwrap();
+        *s += amt;
+    }
+    fn finished(&self) -> bool { self.frames.len() == 0 }
+    fn get_instr(&mut self) -> Instr {
+        let (ref mut pc, ref code) = self.frames.last_mut().unwrap();
+        let opc = *pc;
+        *pc += 1;
+        code.get(opc).copied().unwrap()
+    }
+    fn step(&mut self) {
+        match self.get_instr() {
+            Instr::PutStr(sind) => match self.get_mode() {
+                Mode::Write => 
+                    {self.buf.push_str(self.strs[sind as usize])}
+                Mode::Read => {
+                    let targ = self.strs[sind as usize];
+                    let s = self.s();
+                    if self.buf[s..].len() < targ.len()
+                        { self.fail(); return; }
+                    if &self.buf[s..s+targ.len()] != targ
+                        { self.fail(); return; }
+                    self.cs(targ.len());
+                }
+            }
+            Instr::Proceed => {
+                self.pop_frame()
+            }
+            Instr::Invoke(ind) => {
+                self.new_frame(self.code[ind as usize]);
+            }
+            Instr::PrepScan(ind) => {
+                self.new_scan(ind);
+            }
+            Instr::DropScan => {
+                if self.s() != self.buf.len()
+                    {self.fail();}
+                else
+                    {self.pop_scan();}
+            }
+            Instr::Mode(mode) => {
+                self.scans.last_mut().unwrap().2 = mode;
+            },
+            Instr::Skip(x) => {
+                let last = self.frames.last_mut().unwrap();
+                last.0 += x as usize;
+            }
+            Instr::Trap => {
+                panic!("It's A Trap !");
+            }
+            _=>()
+        }
+    }
+    fn run(&mut self) {
+        while !self.finished() {
+            self.step()
+        }
+    }
+}
+
 
 fn main() {
     let test = r#"<!-- attrib magic : cool -->
 <!-- attrib testo : test  -->
-[#testo#][testo=]magic=[#magic#][/testo=]"#;
+[#testo#][testo=[#testo#]]magic=[#magic#][/testo=]"#;
 
     let mut parser = Parser::new(test);
-    println!("[PARSING] {test:?}");
+    eprintln!("[PARSING] {test:?}");
     let mut code = Vec::new();
     while parser.peek().is_some() {
         let res = parser.parse_element();
@@ -313,11 +510,38 @@ fn main() {
             None => { println!("[PARSE FAILED]"); break }
         }
     }
-    println!("[PARSED] {code:?}");
+    eprintln!("[PARSED] {code:#?}");
+    eprintln!("prepping to compile");
+    let mut compiler = Compiler::new();
+    compiler.prep(code);
+    while !compiler.done() {
+        match compiler.run() {
+            Ok(()) => {break;},
+            Err(name) => {
+                println!("\x1b[91m[ERROR] ignoring redef of `{name}`\x1b[0m")
+            }
+        }
+    }
+    let (code, strs, attrs) = compiler.to_exec();
+    eprintln!("done compiling");
+    eprintln!("===== disasm");
+    eprintln!("_content:");
+    for instr in code[0].iter() {
+        eprintln!("\t{instr:?}");
+    }
+    for (attr, &ind) in attrs.iter() {
+        eprintln!("attr@{ind}({attr}):");
+        for instr in code[ind as usize].iter() {
+            eprintln!("\t{instr:?}");
+        }
+    }
+    eprintln!("===== exec");
+    let code_map = code.iter().map(|x| &x[..]).collect::<Vec<_>>();
+    let mut machine = Machine::new(&code_map[..], &strs[..]);
+    machine.run();
+    println!("{}", machine.buf);
 
-    let mut _outer = Machine::new(&code);
-    _outer.run();
-    println!("{:?}", _outer.outp);
+
 }
 
 // TODO
